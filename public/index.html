@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en" style="height:100%;margin:0;padding:0;">
+<head>
+    <meta charset="UTF-8">
+    <title>Markdown Editor with AI Integration</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.7/lib/codemirror.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.7/theme/idea.css">
+</head>
+<body style="height:100%;margin:0;padding:0;">
+    <div class="container-fluid" style="height:100%;display:flex;flex-direction:column;padding:0;">
+        <div class="mb-2" style="padding:10px;">
+            <button class="btn btn-primary" data-toggle="modal" data-target="#settingsModal">Settings</button>
+            <button class="btn btn-secondary" onclick="loadFromFile()">Load</button>
+            <button class="btn btn-secondary" id="saveButton" onclick="saveToFile()" style="display:none;">Save</button>
+            <button class="btn btn-secondary" onclick="saveAsToFile()">Save As</button>
+        </div>
+        <div class="content" style="flex:1;display:flex;overflow:hidden;">
+            <div class="col-md-6 p-0">
+                <textarea id="editor" class="form-control" style="height:100%;border:none;overflow:auto;" placeholder="Type your markdown here..."></textarea>
+            </div>
+            <div class="col-md-6 p-0">
+                <div id="preview" class="border-left" style="height:100%;border:none;padding:10px;overflow:auto;"></div>
+            </div>
+        </div>
+        <div class="control-buttons" style="padding:10px;text-align:center;">
+            <button class="btn btn-success mr-2" onclick="handleCtrlEnter()">Generate (Ctrl+Enter)</button>
+        </div>
+    </div>
+
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg" style="max-width:90%;">
+            <div class="modal-content">
+                <div class="modal-header" style="padding:10px;">
+                    <h5 id="settingsLabel">AI Settings</h5>
+                    <button type="button" class="close" data-dismiss="modal">&times;</button>
+                </div>
+                <div class="modal-body" style="padding:10px;">
+                    <textarea id="ai-settings" class="form-control" rows="15"></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.7/lib/codemirror.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.7/mode/markdown/markdown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.7/keymap/sublime.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        let editor;
+        let fileHandle = null;
+        const preview = document.getElementById('preview');
+        const aiSettingsInput = document.getElementById('ai-settings');
+        const saveButton = document.getElementById('saveButton');
+        let aiSettings = {};
+
+        $(document).ready(() => {
+            loadSettings();
+            initEditor();
+            updatePreview();
+            aiSettingsInput.addEventListener('input', () => {
+                localStorage.setItem('aiSettings', aiSettingsInput.value);
+                aiSettings = parseSettings(aiSettingsInput.value);
+            });
+        });
+
+        function initEditor() {
+            editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+                mode: 'markdown',
+                lineNumbers: true,
+                styleActiveLine: true,
+                lineWrapping: true,
+                keyMap: 'sublime',
+                inputStyle: 'contenteditable',
+                spellcheck: true,
+                extraKeys: {
+                    'Ctrl-Enter': function(cm) {
+                        handleCtrlEnter();
+                    }
+                }
+            });
+            editor.getWrapperElement().style.height = "100%";
+            editor.on('change', updatePreview);
+            const savedContent = localStorage.getItem('editorContent');
+            if (savedContent)
+                editor.setValue(savedContent);
+        }
+
+        function updatePreview()
+        {
+            let content = editor.getValue();
+
+            // Remove control sequences between square brackets
+            content = content.replace(/\[([^\]]+)\](?!\()/g, function(match, p1, offset, string) {
+                let prevChar = string[offset - 1];
+                let nextChar = string[offset + match.length];
+
+                if (prevChar === '!')
+                    return match;
+                if (nextChar === '(')
+                    return match;
+                return '';
+            });
+
+            preview.innerHTML = marked.parse(content);
+            localStorage.setItem('editorContent', editor.getValue());
+        }
+
+        function loadSettings()
+        {
+            const defaultSettingsText = `
+#system_prompt:
+You are a helpful assistant for editing Markdown documents.
+#user_prompt:
+Please assist with the following content.
+#assistant_prompt:
+Thank you for providing the content.
+#prior_context_length: 500
+#post_context_length: 500
+#openai_endpoint: https://api.openai.com/v1/chat/completions
+#api_key: YOUR_API_KEY_HERE
+#model: gpt-3.5-turbo
+#max_tokens: 150
+#temperature: 0.7
+`.trim();
+
+            const defaultSettings = parseSettings(defaultSettingsText);
+            const savedSettingsText = localStorage.getItem('aiSettings') || '';
+            aiSettingsInput.value = savedSettingsText;
+            const userSettings = parseSettings(savedSettingsText);
+            aiSettings = { ...defaultSettings, ...userSettings };
+        }
+
+        function parseSettings(text)
+        {
+            const settings = {};
+            const regex = /^#([^:]+):\s*([\s\S]*?)(?=^#)/gm;
+            let match;
+            while ((match = regex.exec(text)) !== null)
+            {
+                const key = match[1].trim();
+                const value = match[2].replace(/\s+$/, '');
+                settings[key] = value;
+            }
+            return settings;
+        }
+
+        function handleCtrlEnter()
+        {
+            const doc = editor.getDoc();
+            const selection = doc.getSelection();
+            if (selection.length > 0)
+                regenerateSelection();
+            else
+                continueText();
+        }
+
+        async function continueText()
+        {
+            const doc = editor.getDoc();
+            const cursorPos = doc.getCursor();
+            const index = doc.indexFromPos(cursorPos);
+            doc.setSelection(cursorPos, cursorPos);
+
+            const selectedText = "[Continue]";
+            const messages = buildMessages(selectedText, index, index);
+            const aiResponse = await callOpenAiApi(messages);
+            if (aiResponse)
+                insertTextAtCursor(aiResponse);
+        }
+
+        async function regenerateSelection()
+        {
+            const doc = editor.getDoc();
+            const selection = doc.listSelections()[0];
+            const start = doc.indexFromPos(selection.anchor);
+            const end = doc.indexFromPos(selection.head);
+            if (start === end) {
+                alert('Please select some text to regenerate.');
+                return;
+            }
+            const selectedText = doc.getSelection();
+
+            const messages = buildMessages(selectedText, Math.min(start, end), Math.max(start, end));
+            const aiResponse = await callOpenAiApi(messages);
+            if (aiResponse)
+                replaceSelectedText(aiResponse);
+        }
+
+        function buildMessages(content, start, end)
+        {
+            const messages = [];
+            if (aiSettings.system_prompt) messages.push({ role: 'system', content: aiSettings.system_prompt });
+
+            let priorContextLength = parseInt(aiSettings.prior_context_length) || 0;
+            let postContextLength = parseInt(aiSettings.post_context_length) || 0;
+
+            const fullText = editor.getValue();
+            const beforeStart = Math.max(0, start - priorContextLength);
+            const afterEnd = Math.min(fullText.length, end + postContextLength);
+
+            const priorContext = fullText.substring(beforeStart, start);
+            const postContext = fullText.substring(end, afterEnd);
+
+            let userContent = '';
+            if (priorContext)
+                userContent += '\n\nThe text before is:\n```text\n' + priorContext + '\n```\n';
+            userContent += "\n\n[New fragment]\n\n";
+            if (postContext)
+                userContent += '\n\nThe text after is:\n```text\n' + postContext + '\n```\n';
+
+            userContent += '\n\nGenerate new fragment instead of:\n```text\n' + content + '\n```\n';
+
+            messages.push({ role: 'user', content: userContent });
+            if (aiSettings.user_prompt)
+                messages.push({ role: 'user', content: aiSettings.user_prompt });
+            if (aiSettings.assistant_prompt)
+                messages.push({ role: 'assistant', content: aiSettings.assistant_prompt });
+            return messages;
+        }
+
+        async function callOpenAiApi(messages)
+        {
+            if (!aiSettings.api_key || !aiSettings.openai_endpoint)
+            {
+                alert('API Key or Endpoint is missing. Please check your settings.');
+                return null;
+            }
+
+            try
+            {
+                const response = await fetch(aiSettings.openai_endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${aiSettings.api_key}`
+                    },
+                    body: JSON.stringify({
+                        model: aiSettings.model || 'gpt-3.5-turbo',
+                        messages: messages,
+                        max_tokens: parseInt(aiSettings.max_tokens) || 150,
+                        temperature: parseFloat(aiSettings.temperature) || 0.7
+                    })
+                });
+
+                const data = await response.json();
+                return data.choices?.[0]?.message?.content?.trim() || null;
+            }
+            catch (error)
+            {
+                console.error('Error calling OpenAI API:', error);
+                return null;
+            }
+        }
+
+        function insertTextAtCursor(text)
+        {
+            editor.focus();
+            editor.replaceSelection(text, 'end');
+            updatePreview();
+        }
+
+        function replaceSelectedText(text)
+        {
+            editor.focus();
+            editor.replaceSelection(text, 'around');
+            updatePreview();
+        }
+
+        async function saveToFile()
+        {
+            if (fileHandle)
+            {
+                try
+                {
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(editor.getValue());
+                    await writable.close();
+                } catch (error)
+                {
+                    console.error('Save failed:', error);
+                }
+            }
+            else
+            {
+                alert('No file is open. Use "Save As" to save the file.');
+            }
+        }
+
+        async function saveAsToFile()
+        {
+            try
+            {
+                const handle = await window.showSaveFilePicker({
+                    types: [{
+                        description: 'Markdown Files',
+                        accept: { 'text/markdown': ['.md'] }
+                    }],
+                });
+                const writable = await handle.createWritable();
+                await writable.write(editor.getValue());
+                await writable.close();
+                fileHandle = handle; // Update the file handle
+                saveButton.style.display = 'inline-block'; // Show the Save button
+            }
+            catch (error)
+            {
+                console.error('Save As aborted or failed:', error);
+            }
+        }
+
+        async function loadFromFile()
+        {
+            try
+            {
+                const [handle] = await window.showOpenFilePicker({
+                    types: [{
+                        description: 'Markdown Files',
+                        accept: { 'text/markdown': ['.md'] }
+                    }],
+                    multiple: false
+                });
+                const file = await handle.getFile();
+                const content = await file.text();
+                editor.setValue(content);
+                fileHandle = handle; // Store the file handle
+                saveButton.style.display = 'inline-block'; // Show the Save button
+            }
+            catch (error)
+            {
+                console.error('Load aborted or failed:', error);
+            }
+        }
+
+        window.addEventListener('keydown', function(event) {
+            if (event.ctrlKey && event.key === 's')
+            {
+                event.preventDefault();
+                if (fileHandle)
+                    saveToFile();
+                else
+                    saveAsToFile();
+            }
+        });
+    </script>
+</body>
+</html>
